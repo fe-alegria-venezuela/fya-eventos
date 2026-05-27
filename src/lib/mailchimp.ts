@@ -171,16 +171,45 @@ async function getEmailsInSegment(segmentId: number): Promise<string[]> {
 
 export async function getInvitedPeople(): Promise<Person[]> {
   log.info("getInvitedPeople start", { apiKey: mask(env.MAILCHIMP_API_KEY()), list: LIST() });
-  const segId = await findSegmentIdByName(TAGS.INVITADO);
-  if (!segId) return [];
 
-  const emails = await getEmailsInSegment(segId);
-  log.info("segment members", { count: emails.length });
-  if (emails.length === 0) return [];
+  // Mailchimp's /segments/{id}/members endpoint is cached server-side for hours/days.
+  // Querying ONLY the Invitado segment misses contacts whose tag was applied recently.
+  // We query Invitado + Sí asistirá + No asistirá in parallel and union the emails so a
+  // stale entry in one segment is rescued by the others.
+  const probeNames: string[] = [TAGS.INVITADO, TAGS.CONFIRMED, TAGS.DECLINED];
+  const segIds = await Promise.all(probeNames.map((n) => findSegmentIdByName(n)));
+  const validSegs: { name: string; id: number }[] = probeNames
+    .map((name, i) => ({ name, id: segIds[i] }))
+    .filter((s): s is { name: string; id: number } => s.id !== null);
 
-  const results = await Promise.all(emails.map((e) => getMember(e)));
+  if (validSegs.length === 0) {
+    log.warn("no usable segments found", { probeNames });
+    return [];
+  }
+
+  const emailLists = await Promise.all(validSegs.map((s) => getEmailsInSegment(s.id)));
+  const union = new Set<string>();
+  emailLists.forEach((emails, i) => {
+    log.info("segment members", { segment: validSegs[i].name, count: emails.length });
+    emails.forEach((e) => union.add(e));
+  });
+  log.info("union of segments", { uniqueEmails: union.size });
+
+  if (union.size === 0) return [];
+
+  // Fresh GET per member — bypasses the segment cache for tag accuracy.
+  const results = await Promise.all(Array.from(union).map((e) => getMember(e)));
   const people = results.filter((m): m is MailchimpMember => m !== null).map(toPerson);
-  log.info("getInvitedPeople done", { fetched: people.length });
+
+  // Visibility: log a tag breakdown so it's obvious why someone is/isn't counted.
+  const breakdown = {
+    total: people.length,
+    confirmed: people.filter((p) => p.hasConfirmed && !p.hasDeclined).length,
+    declined: people.filter((p) => p.hasDeclined && !p.hasConfirmed).length,
+    noResponse: people.filter((p) => !p.hasConfirmed && !p.hasDeclined).length,
+    checkedIn: people.filter((p) => p.hasCheckedIn).length,
+  };
+  log.info("getInvitedPeople done", breakdown);
   return people;
 }
 
