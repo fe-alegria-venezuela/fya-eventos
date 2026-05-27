@@ -18,6 +18,8 @@ import {
   LuCheck,
   LuMail,
   LuChevronDown,
+  LuFlaskConical,
+  LuSend,
 } from "react-icons/lu";
 import { Logo } from "@/components/Logo";
 import { EVENT } from "@/lib/env";
@@ -292,6 +294,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
               Actividad reciente
             </div>
             <ActivityStream confirmed={data?.confirmed ?? []} />
+
+            <EmailTestPanel showToast={showToast} />
           </section>
         )}
       </div>
@@ -565,6 +569,104 @@ function ActivityStream({ confirmed }: { confirmed: Person[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// TEMPORARY — panel para probar los 3 correos del sistema.
+// Borrar este componente, su <EmailTestPanel ... /> en el Evento tab,
+// los imports LuFlaskConical/LuSend, y el route /api/test/send-email
+// cuando los diseños queden aprobados.
+// ────────────────────────────────────────────────────────────────────────────
+type EmailKind = "qr" | "confirmation" | "declined";
+
+function EmailTestPanel({
+  showToast,
+}: {
+  showToast: (msg: string, tone?: "ok" | "info" | "err") => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState<EmailKind | null>(null);
+
+  async function send(kind: EmailKind) {
+    const e = email.trim().toLowerCase();
+    if (!e.includes("@")) {
+      showToast("Email inválido", "err");
+      return;
+    }
+    setBusy(kind);
+    try {
+      const res = await fetch("/api/test/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, email: e, name: name.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (data.status === "success") showToast(data.message, "ok");
+      else showToast(data.message || "Falló el envío", "err");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Network error", "err");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const buttons: { kind: EmailKind; label: string; sub: string }[] = [
+    { kind: "confirmation", label: "Confirmación", sub: "RSVP recibido" },
+    { kind: "qr", label: "Con QR", sub: "Pase de acceso" },
+    { kind: "declined", label: "Declinación", sub: "No asistirá" },
+  ];
+
+  return (
+    <div className="mt-8 border-2 border-dashed border-amber-400 rounded-2xl bg-amber-50 p-4">
+      <div className="flex items-center gap-2 mb-1">
+        <LuFlaskConical className="size-4 text-amber-700" />
+        <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+          Pruebas · provisional
+        </span>
+      </div>
+      <p className="text-xs text-amber-900/80 mb-3 leading-snug">
+        Envía cada uno de los 3 correos del sistema al email indicado, sin tocar Mailchimp.
+        Útil para revisar diseño. Borrar este panel cuando los correos queden aprobados.
+      </p>
+
+      <input
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="correo@destino.com"
+        autoComplete="off"
+        inputMode="email"
+        className="w-full px-3.5 py-2.5 border border-amber-300 bg-white rounded-lg text-sm mb-2 focus:outline-2 focus:outline-amber-500"
+      />
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Nombre (opcional) — default: Invitado de prueba"
+        className="w-full px-3.5 py-2.5 border border-amber-300 bg-white rounded-lg text-sm mb-3 focus:outline-2 focus:outline-amber-500"
+      />
+
+      <div className="grid grid-cols-3 gap-2">
+        {buttons.map((b) => (
+          <button
+            key={b.kind}
+            onClick={() => send(b.kind)}
+            disabled={busy !== null}
+            className="flex flex-col items-center gap-1 p-3 bg-white hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed border border-amber-300 rounded-lg transition"
+          >
+            {busy === b.kind ? (
+              <LuRefreshCw className="size-4 text-amber-700 animate-spin" />
+            ) : (
+              <LuSend className="size-4 text-amber-700" />
+            )}
+            <span className="text-xs font-semibold text-amber-900">{b.label}</span>
+            <span className="text-[10px] text-amber-700/80 leading-tight">{b.sub}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

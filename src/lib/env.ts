@@ -28,7 +28,8 @@ export const TAGS = {
 
 export const EVENT = {
   name: process.env.NEXT_PUBLIC_EVENT_NAME || "Evento Trasnocho Cultural",
-  date: process.env.NEXT_PUBLIC_EVENT_DATE || "18 de Julio, 2026",
+  date: process.env.NEXT_PUBLIC_EVENT_DATE || "18 de junio, 2026",
+  hour: process.env.NEXT_PUBLIC_EVENT_HOUR || "6:00 pm",
   location:
     process.env.NEXT_PUBLIC_EVENT_LOCATION ||
     "Trasnocho Cultural, 1060 Avenida Principal de las Mercedes, Caracas",
