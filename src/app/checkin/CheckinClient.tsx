@@ -20,7 +20,7 @@ type Props = {
 };
 
 type IconType = React.ComponentType<{ className?: string }>;
-
+// 
 export default function CheckinClient({ token, email, name, initialState }: Props) {
   const [state, setState] = useState<State>(
     initialState === "already"
