@@ -12,6 +12,11 @@ export const env = {
   BASE_URL: () =>
     process.env.NEXT_PUBLIC_BASE_URL ||
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000"),
+  SENDGRID_API_KEY: () => required("SENDGRID_API_KEY"),
+  // Sender. Must be a verified sender in your SendGrid account (Single Sender Verification
+  // or a domain you authenticated). Format: "Display Name <email@domain.com>".
+  FROM_EMAIL: () => required("FROM_EMAIL"),
+  REPLY_TO: () => process.env.REPLY_TO_EMAIL,
 };
 
 export const TAGS = {

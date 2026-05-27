@@ -40,7 +40,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-
+# Contexto para claude
 CLAUDE-CONTEXT.MD
 code.gs
 dashboard-as.html

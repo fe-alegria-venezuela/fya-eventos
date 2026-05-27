@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { env, TAGS } from "./env";
+import { logger, mask } from "./log";
+
+const log = logger("mailchimp");
 
 export type MemberStatus =
   | "subscribed"
@@ -46,13 +49,40 @@ function headers() {
   return { Authorization: auth(), "Content-Type": "application/json" };
 }
 
-// Fresh fetches only — segment endpoints have stale tags (Mailchimp caches several days).
+// Wraps fetch with structured logging. Logs path + status; on failure also dumps body.
 async function mcFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${MC_BASE()}${path}`, {
-    ...init,
-    headers: { ...headers(), ...(init?.headers || {}) },
-    cache: "no-store",
-  });
+  const method = init?.method || "GET";
+  const start = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(`${MC_BASE()}${path}`, {
+      ...init,
+      headers: { ...headers(), ...(init?.headers || {}) },
+      cache: "no-store",
+    });
+  } catch (err) {
+    log.error("network error", { method, path, error: err instanceof Error ? err.message : err });
+    throw err;
+  }
+
+  const elapsedMs = Date.now() - start;
+  if (!res.ok) {
+    let body: unknown = null;
+    try {
+      const text = await res.clone().text();
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text.slice(0, 500);
+      }
+    } catch {
+      // ignore
+    }
+    log.error("non-2xx", { method, path, status: res.status, elapsedMs, body });
+  } else {
+    log.info("ok", { method, path, status: res.status, elapsedMs });
+  }
+  return res;
 }
 
 export async function getMember(email: string): Promise<MailchimpMember | null> {
@@ -65,11 +95,22 @@ export async function setTags(
   email: string,
   tags: { name: string; status: "active" | "inactive" }[],
 ): Promise<boolean> {
+  log.info("setTags", { email, tags });
   const res = await mcFetch(`/lists/${LIST()}/members/${md5(email)}/tags`, {
     method: "POST",
     body: JSON.stringify({ tags }),
   });
   return res.ok;
+}
+
+// After a write, fetch and log the current tags. Helps confirm whether Mailchimp
+// actually landed the change (vs. silently dropping it due to tag-name mismatch).
+async function logTagState(email: string, when: string): Promise<string[]> {
+  const m = await getMember(email);
+  const tags = (m?.tags || []).map((t) => t.name);
+  // Status matters: a Journey will skip contacts that aren't "subscribed".
+  log.info(`tag state ${when}`, { email, status: m?.status, tags });
+  return tags;
 }
 
 function toPerson(m: MailchimpMember): Person {
@@ -101,14 +142,17 @@ interface SegmentList {
 }
 
 async function findSegmentIdByName(name: string): Promise<number | null> {
-  // Static tag segments live under type=static; saved-segment tags can also live under type=saved.
   for (const type of ["static", "saved"]) {
     const res = await mcFetch(`/lists/${LIST()}/segments?type=${type}&count=200`);
     if (!res.ok) continue;
     const data = (await res.json()) as SegmentList;
     const found = data.segments?.find((s) => s.name === name);
-    if (found) return found.id;
+    if (found) {
+      log.info("segment found", { name, type, id: found.id });
+      return found.id;
+    }
   }
+  log.warn("segment not found", { name });
   return null;
 }
 
@@ -125,17 +169,19 @@ async function getEmailsInSegment(segmentId: number): Promise<string[]> {
   return (data.members || []).map((m) => m.email_address.toLowerCase());
 }
 
-// Returns full Person[] for everyone tagged "Invitado".
-// Two-step: get emails from segment (fast), then individual GETs in parallel (fresh tags).
 export async function getInvitedPeople(): Promise<Person[]> {
+  log.info("getInvitedPeople start", { apiKey: mask(env.MAILCHIMP_API_KEY()), list: LIST() });
   const segId = await findSegmentIdByName(TAGS.INVITADO);
   if (!segId) return [];
 
   const emails = await getEmailsInSegment(segId);
+  log.info("segment members", { count: emails.length });
   if (emails.length === 0) return [];
 
   const results = await Promise.all(emails.map((e) => getMember(e)));
-  return results.filter((m): m is MailchimpMember => m !== null).map(toPerson);
+  const people = results.filter((m): m is MailchimpMember => m !== null).map(toPerson);
+  log.info("getInvitedPeople done", { fetched: people.length });
+  return people;
 }
 
 export interface DashboardStats {
@@ -183,30 +229,70 @@ function byName(a: Person, b: Person): number {
   return a.name.localeCompare(b.name, "es");
 }
 
-// Tag-flip helpers — encapsulate the "remove the opposite tag" rule.
 export async function applyConfirmed(email: string): Promise<boolean> {
-  return setTags(email, [
+  log.info("applyConfirmed start", { email, tagName: TAGS.CONFIRMED });
+  await logTagState(email, "before applyConfirmed");
+  const ok = await setTags(email, [
     { name: TAGS.CONFIRMED, status: "active" },
     { name: TAGS.DECLINED, status: "inactive" },
   ]);
+  const after = await logTagState(email, "after applyConfirmed");
+  if (!after.includes(TAGS.CONFIRMED)) {
+    log.warn("CONFIRMED tag did NOT land — check tag name normalization in Mailchimp", {
+      expected: TAGS.CONFIRMED,
+      actualTags: after,
+    });
+  }
+  log.info("applyConfirmed done", { email, ok, hasConfirmed: after.includes(TAGS.CONFIRMED) });
+  return ok;
 }
 
 export async function applyDeclined(email: string): Promise<boolean> {
-  return setTags(email, [
+  log.info("applyDeclined start", { email });
+  const ok = await setTags(email, [
     { name: TAGS.DECLINED, status: "active" },
     { name: TAGS.CONFIRMED, status: "inactive" },
   ]);
+  await logTagState(email, "after applyDeclined");
+  log.info("applyDeclined done", { email, ok });
+  return ok;
 }
 
 export async function applyCheckin(email: string): Promise<boolean> {
-  return setTags(email, [{ name: TAGS.CHECKIN, status: "active" }]);
+  log.info("applyCheckin start", { email });
+  const ok = await setTags(email, [{ name: TAGS.CHECKIN, status: "active" }]);
+  await logTagState(email, "after applyCheckin");
+  log.info("applyCheckin done", { email, ok });
+  return ok;
 }
 
-// Re-trigger the QR journey: flip the tag off and back on so Mailchimp's Customer
-// Journey re-fires the "tag added" trigger.
+// Off → 400ms → on to re-trigger the Mailchimp Customer Journey that sends the QR.
 export async function reapplyConfirmedTag(email: string): Promise<boolean> {
+  log.info("reapplyConfirmedTag start", { email, tagName: TAGS.CONFIRMED });
+  await logTagState(email, "before reapply");
+
+  log.info("reapply: flipping OFF");
   const off = await setTags(email, [{ name: TAGS.CONFIRMED, status: "inactive" }]);
-  if (!off) return false;
+  if (!off) {
+    log.error("reapply: OFF flip failed — aborting");
+    return false;
+  }
+  await logTagState(email, "after OFF flip");
+
+  log.info("reapply: sleeping 400ms before ON flip");
   await new Promise((r) => setTimeout(r, 400));
-  return setTags(email, [{ name: TAGS.CONFIRMED, status: "active" }]);
+
+  log.info("reapply: flipping ON");
+  const on = await setTags(email, [{ name: TAGS.CONFIRMED, status: "active" }]);
+  const finalTags = await logTagState(email, "after ON flip");
+
+  if (!finalTags.includes(TAGS.CONFIRMED)) {
+    log.error("reapply: CONFIRMED tag NOT present after ON flip — Mailchimp Journey will NOT fire", {
+      expected: TAGS.CONFIRMED,
+      actualTags: finalTags,
+    });
+  } else {
+    log.info("reapply done — Journey should fire if its trigger is 'tag added: Sí asistirá'");
+  }
+  return on;
 }
