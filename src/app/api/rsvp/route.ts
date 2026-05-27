@@ -14,10 +14,11 @@ const Query = z.object({
   e: z.email().transform((s) => s.toLowerCase().trim()),
 });
 
-function redirectTo(status: string, name?: string): NextResponse {
+function redirectTo(status: string, name?: string, email?: string): NextResponse {
   const url = new URL("/rsvp", env.BASE_URL());
   url.searchParams.set("status", status);
   if (name) url.searchParams.set("name", name);
+  if (email) url.searchParams.set("e", email);
   return NextResponse.redirect(url, { status: 303 });
 }
 
@@ -64,5 +65,5 @@ export async function GET(request: NextRequest) {
     log.info("rsvp declined", { email });
   }
 
-  return redirectTo(r === "yes" ? "success" : "declined", person.firstName);
+  return redirectTo(r === "yes" ? "success" : "declined", person.firstName, email);
 }
