@@ -49,40 +49,99 @@ function headers() {
   return { Authorization: auth(), "Content-Type": "application/json" };
 }
 
-// Wraps fetch with structured logging. Logs path + status; on failure also dumps body.
+// Status codes worth retrying — transient ones. Auth (401/403) and not-found (404) are not.
+const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+// Backoff: 200ms → 600ms → 1500ms. Last entry is unused (we stop after MAX_ATTEMPTS - 1 waits).
+const BACKOFF_MS = [200, 600, 1500];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function readBody(res: Response): Promise<unknown> {
+  try {
+    const text = await res.clone().text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text.slice(0, 500);
+    }
+  } catch {
+    return null;
+  }
+}
+
+// Wraps fetch with retry-on-transient + structured logging. Retries 429/5xx up to MAX_ATTEMPTS
+// with exponential backoff. 4xx (except 408/425/429) is treated as terminal — no retry.
+// Also honors a Retry-After header if Mailchimp sends one.
 async function mcFetch(path: string, init?: RequestInit): Promise<Response> {
   const method = init?.method || "GET";
-  const start = Date.now();
-  let res: Response;
-  try {
-    res = await fetch(`${MC_BASE()}${path}`, {
-      ...init,
-      headers: { ...headers(), ...(init?.headers || {}) },
-      cache: "no-store",
+  let lastRes: Response | null = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const start = Date.now();
+    let res: Response;
+    try {
+      res = await fetch(`${MC_BASE()}${path}`, {
+        ...init,
+        headers: { ...headers(), ...(init?.headers || {}) },
+        cache: "no-store",
+      });
+    } catch (err) {
+      // Network error (DNS, socket reset). Retry like a 5xx.
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn("network error", { method, path, attempt, error: message });
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(BACKOFF_MS[attempt - 1]);
+        continue;
+      }
+      log.error("network error — giving up", { method, path, attempts: attempt, error: message });
+      throw err;
+    }
+
+    const elapsedMs = Date.now() - start;
+    lastRes = res;
+
+    if (res.ok) {
+      if (attempt > 1) log.info("ok after retry", { method, path, status: res.status, attempt, elapsedMs });
+      else log.info("ok", { method, path, status: res.status, elapsedMs });
+      return res;
+    }
+
+    const retryable = TRANSIENT_STATUSES.has(res.status);
+    const body = await readBody(res);
+
+    if (retryable && attempt < MAX_ATTEMPTS) {
+      // Mailchimp may suggest a wait time on rate-limit. Prefer it when present.
+      const retryAfter = res.headers.get("retry-after");
+      const headerMs = retryAfter ? Math.min(parseInt(retryAfter, 10) * 1000, 5000) : null;
+      const waitMs = headerMs && !Number.isNaN(headerMs) ? headerMs : BACKOFF_MS[attempt - 1];
+      log.warn("transient — retrying", {
+        method,
+        path,
+        attempt,
+        status: res.status,
+        elapsedMs,
+        waitMs,
+      });
+      await sleep(waitMs);
+      continue;
+    }
+
+    log.error(retryable ? "transient — gave up" : "non-2xx", {
+      method,
+      path,
+      attempts: attempt,
+      status: res.status,
+      elapsedMs,
+      body,
     });
-  } catch (err) {
-    log.error("network error", { method, path, error: err instanceof Error ? err.message : err });
-    throw err;
+    return res;
   }
 
-  const elapsedMs = Date.now() - start;
-  if (!res.ok) {
-    let body: unknown = null;
-    try {
-      const text = await res.clone().text();
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = text.slice(0, 500);
-      }
-    } catch {
-      // ignore
-    }
-    log.error("non-2xx", { method, path, status: res.status, elapsedMs, body });
-  } else {
-    log.info("ok", { method, path, status: res.status, elapsedMs });
-  }
-  return res;
+  // Shouldn't reach here, but TypeScript needs it.
+  return lastRes!;
 }
 
 export async function getMember(email: string): Promise<MailchimpMember | null> {
@@ -169,6 +228,49 @@ async function getEmailsInSegment(segmentId: number): Promise<string[]> {
   return (data.members || []).map((m) => m.email_address.toLowerCase());
 }
 
+interface MembersWithTagsResp {
+  members: { email_address: string; tags: { id: number; name: string }[] }[];
+  total_items: number;
+}
+
+const RECENT_CHANGES_DAYS = 14;
+const RECENT_CHANGES_PAGE_SIZE = 1000;
+
+// Lists audience members modified in the last N days and filters locally by tag.
+// This complements the heavily-cached /segments/{id}/members endpoint — Mailchimp's
+// /lists/{id}/members is more real-time, so newly-tagged contacts show up here even
+// when the tag's segment cache is still stale.
+async function getRecentlyTaggedEmails(tagName: string): Promise<string[]> {
+  const since = new Date(Date.now() - RECENT_CHANGES_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const url =
+    `/lists/${LIST()}/members?since_last_changed=${encodeURIComponent(since)}` +
+    `&count=${RECENT_CHANGES_PAGE_SIZE}&fields=members.email_address,members.tags,total_items`;
+  const res = await mcFetch(url);
+  if (!res.ok) return [];
+
+  const data = (await res.json()) as MembersWithTagsResp;
+  const members = data.members || [];
+  const matches = members
+    .filter((m) => m.tags?.some((t) => t.name === tagName))
+    .map((m) => m.email_address.toLowerCase());
+
+  if (members.length >= RECENT_CHANGES_PAGE_SIZE) {
+    log.warn("recent-changes hit page cap — older modifications may be truncated", {
+      since,
+      pageSize: RECENT_CHANGES_PAGE_SIZE,
+      totalItems: data.total_items,
+    });
+  }
+
+  log.info("recently-tagged scan", {
+    tag: tagName,
+    sinceDays: RECENT_CHANGES_DAYS,
+    membersScanned: members.length,
+    matches: matches.length,
+  });
+  return matches;
+}
+
 export async function getInvitedPeople(): Promise<Person[]> {
   log.info("getInvitedPeople start", { apiKey: mask(env.MAILCHIMP_API_KEY()), list: LIST() });
 
@@ -187,23 +289,55 @@ export async function getInvitedPeople(): Promise<Person[]> {
     return [];
   }
 
-  const emailLists = await Promise.all(validSegs.map((s) => getEmailsInSegment(s.id)));
+  // Run segment queries and the recent-changes scan in parallel — no extra latency.
+  const [emailLists, recentInvited] = await Promise.all([
+    Promise.all(validSegs.map((s) => getEmailsInSegment(s.id))),
+    getRecentlyTaggedEmails(TAGS.INVITADO),
+  ]);
+
   const union = new Set<string>();
   emailLists.forEach((emails, i) => {
     log.info("segment members", { segment: validSegs[i].name, count: emails.length });
     emails.forEach((e) => union.add(e));
   });
-  log.info("union of segments", { uniqueEmails: union.size });
+
+  // Add the recent-changes scan — catches newly tagged contacts the segment cache missed.
+  const beforeRecent = union.size;
+  recentInvited.forEach((e) => union.add(e));
+  const addedByRecent = union.size - beforeRecent;
+  log.info("union with recent-changes", {
+    fromSegments: beforeRecent,
+    addedByRecent,
+    total: union.size,
+  });
 
   if (union.size === 0) return [];
 
   // Fresh GET per member — bypasses the segment cache for tag accuracy.
-  const results = await Promise.all(Array.from(union).map((e) => getMember(e)));
-  const people = results.filter((m): m is MailchimpMember => m !== null).map(toPerson);
+  // Pair each result back with its source email so we know exactly who dropped.
+  const emails = Array.from(union);
+  const results = await Promise.all(emails.map((e) => getMember(e).then((m) => ({ email: e, m }))));
+  const people: Person[] = [];
+  const dropped: string[] = [];
+  for (const { email, m } of results) {
+    if (m) people.push(toPerson(m));
+    else dropped.push(email);
+  }
 
-  // Visibility: log a tag breakdown so it's obvious why someone is/isn't counted.
+  if (dropped.length > 0) {
+    // These are the emails causing the fluctuating count. Should be empty after retries
+    // do their job. If consistently non-empty for the same emails, that contact has a
+    // permanent issue (deleted, hard-bounced cleaned, archived not yet propagated).
+    log.warn("DROPPED — member fetch failed after retries", {
+      count: dropped.length,
+      emails: dropped,
+    });
+  }
+
   const breakdown = {
-    total: people.length,
+    requested: union.size,
+    fetched: people.length,
+    dropped: dropped.length,
     confirmed: people.filter((p) => p.hasConfirmed && !p.hasDeclined).length,
     declined: people.filter((p) => p.hasDeclined && !p.hasConfirmed).length,
     noResponse: people.filter((p) => !p.hasConfirmed && !p.hasDeclined).length,
