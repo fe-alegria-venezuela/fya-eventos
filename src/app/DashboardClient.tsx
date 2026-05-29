@@ -27,13 +27,22 @@ import type { DashboardData, Person } from "@/lib/mailchimp";
 
 type Tab = "invitados" | "evento";
 type Toast = { msg: string; tone: "ok" | "info" | "err" } | null;
+type ListKey = "confirmed" | "noresp" | "declined";
+
+// Page size for the "Ver más" pagination. Keeps DOM small with 200+ contacts.
+const PAGE_SIZE = 30;
 
 export default function DashboardClient({ initialData }: { initialData: DashboardData | null }) {
   const [data, setData] = useState<DashboardData | null>(initialData);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<Tab>("invitados");
   const [search, setSearch] = useState("");
-  const [openCard, setOpenCard] = useState<"confirmed" | "noresp" | "declined">("confirmed");
+  const [openCard, setOpenCard] = useState<ListKey>("confirmed");
+  const [visible, setVisible] = useState<Record<ListKey, number>>({
+    confirmed: PAGE_SIZE,
+    noresp: PAGE_SIZE,
+    declined: PAGE_SIZE,
+  });
   const [modalOpen, setModalOpen] = useState(false);
   const [manualEmail, setManualEmail] = useState("");
   const [toast, setToast] = useState<Toast>(null);
@@ -74,6 +83,16 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [refresh]);
+
+  // Reset pagination whenever the search term changes — otherwise the user would
+  // have to keep clicking "Ver más" after typing a new query.
+  useEffect(() => {
+    setVisible({ confirmed: PAGE_SIZE, noresp: PAGE_SIZE, declined: PAGE_SIZE });
+  }, [search]);
+
+  const showMore = useCallback((key: ListKey) => {
+    setVisible((prev) => ({ ...prev, [key]: prev[key] + PAGE_SIZE }));
+  }, []);
 
   async function manualCheckIn(email: string) {
     const res = await fetch("/api/invitados/manual-checkin", {
@@ -172,6 +191,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
               <PeopleRows
                 people={filterPeople(data?.confirmed ?? [])}
                 emptyText="Nadie ha confirmado todavía"
+                visibleCount={visible.confirmed}
+                onShowMore={() => showMore("confirmed")}
                 actionFor={(p) =>
                   p.hasCheckedIn ? (
                     <span className="text-xs text-[var(--success)] font-semibold whitespace-nowrap inline-flex items-center gap-1">
@@ -212,6 +233,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
                 people={filterPeople(data?.noResponse ?? [])}
                 emptyText="Sin pendientes"
                 dot="unknown"
+                visibleCount={visible.noresp}
+                onShowMore={() => showMore("noresp")}
               />
             </ListCard>
 
@@ -227,6 +250,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
                 people={filterPeople(data?.declined ?? [])}
                 emptyText="Nadie ha declinado"
                 dot="declined"
+                visibleCount={visible.declined}
+                onShowMore={() => showMore("declined")}
               />
             </ListCard>
           </section>
@@ -463,18 +488,27 @@ function PeopleRows({
   emptyText,
   dot = "auto",
   actionFor,
+  visibleCount,
+  onShowMore,
 }: {
   people: Person[];
   emptyText: string;
   dot?: "auto" | "unknown" | "declined";
   actionFor?: (p: Person) => React.ReactNode;
+  visibleCount?: number;
+  onShowMore?: () => void;
 }) {
   if (people.length === 0) {
     return <div className="py-7 px-4 text-center text-sm text-[var(--muted)]">{emptyText}</div>;
   }
+
+  const cap = visibleCount ?? people.length;
+  const shown = people.slice(0, cap);
+  const remaining = people.length - shown.length;
+
   return (
     <>
-      {people.map((p) => {
+      {shown.map((p) => {
         const dotColor =
           dot === "unknown"
             ? "bg-gray-300"
@@ -497,6 +531,17 @@ function PeopleRows({
           </div>
         );
       })}
+      {remaining > 0 && onShowMore && (
+        <button
+          onClick={onShowMore}
+          className="w-full px-4 py-3 text-sm font-semibold text-[var(--color-primary)] hover:bg-[var(--color-pale)] border-t border-[var(--border)] flex items-center justify-center gap-1.5 transition"
+        >
+          Ver {Math.min(remaining, PAGE_SIZE)} más
+          <span className="text-xs text-[var(--muted)] font-normal">
+            ({shown.length}/{people.length})
+          </span>
+        </button>
+      )}
     </>
   );
 }

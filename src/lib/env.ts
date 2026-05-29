@@ -26,6 +26,22 @@ export const TAGS = {
   CHECKIN: "Asistio",
 } as const;
 
+// Optional pre-known segment IDs. When set, we skip the /segments?type=… discovery call
+// entirely — useful to dodge Akamai when the segments listing endpoint is blocked.
+// Get the IDs from the dashboard logs ("segment found {...,id:XXXXX}") or from Mailchimp UI.
+function parseEnvInt(name: string): number | null {
+  const v = process.env[name];
+  if (!v) return null;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+export const SEGMENT_ID_OVERRIDES: Record<string, number | null> = {
+  [TAGS.INVITADO]: parseEnvInt("MAILCHIMP_SEGMENT_INVITADO"),
+  [TAGS.CONFIRMED]: parseEnvInt("MAILCHIMP_SEGMENT_CONFIRMED"),
+  [TAGS.DECLINED]: parseEnvInt("MAILCHIMP_SEGMENT_DECLINED"),
+};
+
 export const EVENT = {
   name: process.env.NEXT_PUBLIC_EVENT_NAME || "Evento Trasnocho Cultural",
   date: process.env.NEXT_PUBLIC_EVENT_DATE || "18 de junio, 2026",
