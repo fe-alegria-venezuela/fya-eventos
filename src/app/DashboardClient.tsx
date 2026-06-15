@@ -20,6 +20,7 @@ import {
   LuChevronDown,
   LuFlaskConical,
   LuSend,
+  LuUndo2,
 } from "react-icons/lu";
 import { Logo } from "@/components/Logo";
 import { EVENT } from "@/lib/env";
@@ -119,6 +120,22 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
     if (r.status === "success") setTimeout(refresh, 1500);
   }
 
+  async function undoCheckIn(email: string) {
+    if (!confirm("¿Revertir la asistencia de este invitado? Volverá a la lista de confirmados sin marcar.")) {
+      return;
+    }
+    showToast("Revirtiendo asistencia…", "info");
+    const res = await fetch("/api/invitados/deshacer-checkin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const r = await res.json();
+    const tone = r.status === "success" ? "ok" : r.status === "already" ? "info" : "err";
+    showToast(r.message, tone);
+    if (r.status === "success") refresh();
+  }
+
   function filterPeople(list: Person[]): Person[] {
     const q = search.trim().toLowerCase();
     if (!q) return list;
@@ -195,10 +212,20 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
                 onShowMore={() => showMore("confirmed")}
                 actionFor={(p) =>
                   p.hasCheckedIn ? (
-                    <span className="text-xs text-[var(--success)] font-semibold whitespace-nowrap inline-flex items-center gap-1">
-                      <LuCheck className="size-3.5" />
-                      Asistió
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-[var(--success)] font-semibold whitespace-nowrap inline-flex items-center gap-1">
+                        <LuCheck className="size-3.5" />
+                        Asistió
+                      </span>
+                      <button
+                        onClick={() => undoCheckIn(p.email)}
+                        aria-label="Revertir asistencia"
+                        title="Revertir asistencia"
+                        className="p-2 bg-[var(--color-pale)] text-[var(--color-primary-dark)] rounded-lg"
+                      >
+                        <LuUndo2 className="size-4" />
+                      </button>
+                    </div>
                   ) : (
                     <div className="flex gap-1.5">
                       <button
@@ -235,6 +262,17 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
                 dot="unknown"
                 visibleCount={visible.noresp}
                 onShowMore={() => showMore("noresp")}
+                actionFor={(p) => (
+                  <button
+                    onClick={() => resendQr(p.email)}
+                    aria-label="Enviar QR"
+                    title="Enviar QR"
+                    className="px-3 py-2 bg-[var(--color-pale)] text-[var(--color-primary-dark)] text-xs font-semibold rounded-lg whitespace-nowrap inline-flex items-center gap-1.5"
+                  >
+                    <LuMail className="size-3.5" />
+                    Enviar QR
+                  </button>
+                )}
               />
             </ListCard>
 

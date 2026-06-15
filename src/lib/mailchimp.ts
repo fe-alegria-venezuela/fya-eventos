@@ -672,6 +672,16 @@ export async function applyCheckin(email: string): Promise<boolean> {
   return ok;
 }
 
+// Reverts a check-in by flipping the CHECKIN tag off. Used to fix mistaken arrivals
+// (e.g. a guest who self-scanned by accident) from the dashboard.
+export async function applyUndoCheckin(email: string): Promise<boolean> {
+  log.info("applyUndoCheckin start", { email });
+  const ok = await setTags(email, [{ name: TAGS.CHECKIN, status: "inactive" }]);
+  await logTagState(email, "after applyUndoCheckin");
+  log.info("applyUndoCheckin done", { email, ok });
+  return ok;
+}
+
 // Off → 400ms → on to re-trigger the Mailchimp Customer Journey that sends the QR.
 export async function reapplyConfirmedTag(email: string): Promise<boolean> {
   log.info("reapplyConfirmedTag start", { email, tagName: TAGS.CONFIRMED });
