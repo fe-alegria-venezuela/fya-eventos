@@ -1,9 +1,10 @@
 import { LuTriangleAlert } from "react-icons/lu";
 import { decodeEmail, verifyToken } from "@/lib/token";
-import { getPerson } from "@/lib/mailchimp";
+import { getOrImportInvitee } from "@/lib/invitees";
 import CheckinClient from "./CheckinClient";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 function ErrorScreen({ title, body }: { title: string; body: string }) {
   return (
@@ -42,7 +43,7 @@ export default async function CheckinPage({
     );
   }
 
-  const person = await getPerson(email);
+  const person = await getOrImportInvitee(email);
   if (!person) {
     return (
       <ErrorScreen

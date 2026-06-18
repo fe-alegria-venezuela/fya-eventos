@@ -1,8 +1,13 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { applyCheckin, applyConfirmed, getPerson } from "@/lib/mailchimp";
+import { getOrImportInvitee, setCheckin, setConfirmed } from "@/lib/invitees";
+import { appendCheckin } from "@/lib/sheets";
+import { logger } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+const log = logger("manual-checkin");
 
 const Body = z.object({
   email: z.email().transform((s) => s.toLowerCase().trim()),
@@ -22,7 +27,7 @@ export async function POST(request: NextRequest) {
   }
   const { email } = parsed.data;
 
-  const person = await getPerson(email);
+  const person = await getOrImportInvitee(email);
   if (!person) {
     return Response.json(
       { status: "error", message: "No encontrado en la audiencia" },
@@ -40,14 +45,19 @@ export async function POST(request: NextRequest) {
 
   // If they hadn't confirmed, confirm them on the spot — they showed up.
   if (!person.hasConfirmed) {
-    await applyConfirmed(email);
+    await setConfirmed(email);
   }
-  const ok = await applyCheckin(email);
-  if (!ok) {
+  const updated = await setCheckin(email);
+  if (!updated) {
     return Response.json(
       { status: "error", message: "No se pudo registrar el check-in" },
       { status: 502 },
     );
+  }
+
+  const sheet = await appendCheckin({ email, name: person.name, detail: "Check-in manual" });
+  if (!sheet.ok) {
+    log.warn("sheet append failed — check-in still registered", { email, error: sheet.error });
   }
 
   return Response.json({

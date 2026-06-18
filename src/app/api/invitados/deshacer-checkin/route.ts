@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { applyUndoCheckin, getPerson } from "@/lib/mailchimp";
+import { findByEmail, undoCheckin } from "@/lib/invitees";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const Body = z.object({
   email: z.email().transform((s) => s.toLowerCase().trim()),
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
   }
   const { email } = parsed.data;
 
-  const person = await getPerson(email);
+  const person = await findByEmail(email);
   if (!person) {
     return Response.json(
       { status: "error", message: "No encontrado en la audiencia" },
@@ -38,8 +39,8 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const ok = await applyUndoCheckin(email);
-  if (!ok) {
+  const updated = await undoCheckin(email);
+  if (!updated) {
     return Response.json(
       { status: "error", message: "No se pudo revertir la asistencia" },
       { status: 502 },

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { applyConfirmed, applyDeclined, getPerson } from "@/lib/mailchimp";
+import { getOrImportInvitee, setConfirmed, setDeclined } from "@/lib/invitees";
 import { sendQrEmail } from "@/lib/email";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const log = logger("rsvp");
 
@@ -36,16 +37,18 @@ export async function GET(request: NextRequest) {
   }
   const { r, e: email } = parsed.data;
 
-  const person = await getPerson(email);
+  // Mongo is the source of truth; getOrImportInvitee falls back to a one-time
+  // Mailchimp import if this contact isn't synced yet.
+  const person = await getOrImportInvitee(email);
   if (!person) {
-    log.warn("person not found in Mailchimp audience", { email });
+    log.warn("person not found", { email });
     return redirectTo("not-found");
   }
   log.info("person resolved", { email, name: person.name, currentTags: person.tags });
 
-  const ok = r === "yes" ? await applyConfirmed(email) : await applyDeclined(email);
-  if (!ok) {
-    log.error("tag write returned not-ok", { email, r });
+  const updated = r === "yes" ? await setConfirmed(email) : await setDeclined(email);
+  if (!updated) {
+    log.error("status write returned not-ok", { email, r });
     return redirectTo("error", person.firstName);
   }
 
@@ -54,7 +57,7 @@ export async function GET(request: NextRequest) {
     // resent from the dashboard via "Reenviar QR".
     const result = await sendQrEmail(email, person.name);
     if (!result.ok) {
-      log.error("QR email FAILED — tag is applied but recipient did NOT get the QR", {
+      log.error("QR email FAILED — status saved but recipient did NOT get the QR", {
         email,
         error: result.error,
       });

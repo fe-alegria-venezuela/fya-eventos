@@ -21,10 +21,11 @@ import {
   LuFlaskConical,
   LuSend,
   LuUndo2,
+  LuCloudDownload,
 } from "react-icons/lu";
 import { Logo } from "@/components/Logo";
 import { EVENT } from "@/lib/env";
-import type { DashboardData, Person } from "@/lib/mailchimp";
+import type { DashboardData, Person } from "@/lib/dashboard";
 
 type Tab = "invitados" | "evento";
 type Toast = { msg: string; tone: "ok" | "info" | "err" } | null;
@@ -175,6 +176,8 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
 
         {tab === "invitados" && (
           <section>
+            <SyncBar showToast={showToast} onSynced={refresh} />
+
             <Stats
               cells={[
                 { label: "Confirmados", value: s?.confirmed, accent: "primary" },
@@ -652,6 +655,63 @@ function ActivityStream({ confirmed }: { confirmed: Person[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Trae/actualiza los invitados desde Mailchimp hacia MongoDB. Es el ÚNICO punto
+// que toca Mailchimp; el resto del dashboard lee siempre de Mongo. El cron (cada 8h)
+// hace lo mismo en background como respaldo.
+function SyncBar({
+  showToast,
+  onSynced,
+}: {
+  showToast: (msg: string, tone?: "ok" | "info" | "err") => void;
+  onSynced: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [lastSync, setLastSync] = useState<string>("");
+
+  async function sync() {
+    setBusy(true);
+    showToast("Sincronizando con Mailchimp…", "info");
+    try {
+      const res = await fetch("/api/sync", { method: "POST" });
+      const r = await res.json();
+      if (r.status === "success") {
+        showToast(`Sincronizado: ${r.added} nuevos, ${r.updated} actualizados`, "ok");
+        setLastSync(new Date().toLocaleTimeString("es-VE"));
+        onSynced();
+      } else if (r.status === "skipped") {
+        showToast("Ya se sincronizó hace un momento", "info");
+      } else {
+        showToast(r.message || "Falló la sincronización", "err");
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Error de red", "err");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 bg-white rounded-2xl shadow-sm px-4 py-3 mb-3">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-[var(--color-primary-dark)]">
+          Datos desde MongoDB
+        </div>
+        <div className="text-xs text-[var(--muted)] truncate">
+          {lastSync ? `Última sincronización ${lastSync}` : "Sincroniza para traer cambios de Mailchimp"}
+        </div>
+      </div>
+      <button
+        onClick={sync}
+        disabled={busy}
+        className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 bg-[var(--color-primary)] text-white text-sm font-semibold rounded-xl disabled:opacity-60 active:scale-[0.98] transition"
+      >
+        <LuCloudDownload className={`size-4 ${busy ? "animate-pulse" : ""}`} />
+        {busy ? "Sincronizando…" : "Sincronizar"}
+      </button>
     </div>
   );
 }

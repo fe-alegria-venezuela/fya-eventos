@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { env, SEGMENT_ID_OVERRIDES, TAGS } from "./env";
 import { logger, mask } from "./log";
+import type { Person } from "./dashboard";
 
 const log = logger("mailchimp");
 
@@ -19,19 +20,6 @@ export interface MailchimpMember {
   merge_fields: Record<string, string>;
   tags: { id: number; name: string }[];
   last_changed?: string;
-}
-
-export interface Person {
-  id: string;
-  email: string;
-  name: string;
-  firstName: string;
-  lastName: string;
-  tags: string[];
-  hasConfirmed: boolean;
-  hasDeclined: boolean;
-  hasCheckedIn: boolean;
-  lastChanged?: string;
 }
 
 const MC_BASE = () => `https://${env.MAILCHIMP_SERVER()}.api.mailchimp.com/3.0`;
@@ -588,51 +576,6 @@ export async function getInvitedPeople(): Promise<Person[]> {
     lastGoodPeople = { people, at: Date.now() };
   }
   return people;
-}
-
-export interface DashboardStats {
-  totalInvited: number;
-  confirmed: number;
-  declined: number;
-  noResponse: number;
-  arrived: number;
-  pending: number;
-  attendanceRate: number;
-}
-
-export interface DashboardData {
-  stats: DashboardStats;
-  confirmed: Person[];
-  declined: Person[];
-  noResponse: Person[];
-  timestamp: string;
-}
-
-export function buildDashboard(people: Person[]): DashboardData {
-  const confirmed = people.filter((p) => p.hasConfirmed && !p.hasDeclined);
-  const declined = people.filter((p) => p.hasDeclined && !p.hasConfirmed);
-  const noResponse = people.filter((p) => !p.hasConfirmed && !p.hasDeclined);
-  const arrived = confirmed.filter((p) => p.hasCheckedIn).length;
-
-  return {
-    stats: {
-      totalInvited: people.length,
-      confirmed: confirmed.length,
-      declined: declined.length,
-      noResponse: noResponse.length,
-      arrived,
-      pending: confirmed.length - arrived,
-      attendanceRate: confirmed.length > 0 ? Math.round((arrived / confirmed.length) * 100) : 0,
-    },
-    confirmed: confirmed.sort(byName),
-    declined: declined.sort(byName),
-    noResponse: noResponse.sort(byName),
-    timestamp: new Date().toISOString(),
-  };
-}
-
-function byName(a: Person, b: Person): number {
-  return a.name.localeCompare(b.name, "es");
 }
 
 export async function applyConfirmed(email: string): Promise<boolean> {

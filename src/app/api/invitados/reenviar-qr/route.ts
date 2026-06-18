@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { applyConfirmed, getPerson } from "@/lib/mailchimp";
+import { getOrImportInvitee, setConfirmed } from "@/lib/invitees";
 import { sendQrEmail } from "@/lib/email";
 import { logger } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const log = logger("reenviar-qr");
 
@@ -29,19 +30,18 @@ export async function POST(request: NextRequest) {
   const { email } = parsed.data;
   log.info("incoming", { email });
 
-  const person = await getPerson(email);
+  const person = await getOrImportInvitee(email);
   if (!person) {
     log.warn("person not found", { email });
     return Response.json({ status: "error", message: "No encontrado" }, { status: 404 });
   }
   log.info("person resolved", { email, name: person.name, tags: person.tags });
 
-  // If the resend is triggered for someone who hadn't confirmed, also mark them confirmed
-  // — the dashboard only exposes this button on confirmed contacts, but the API endpoint
-  // could be called for any email.
+  // Resending the QR implies confirming — you can't hold an access pass without
+  // being confirmed. Mark them confirmed in Mongo if they weren't.
   if (!person.hasConfirmed) {
-    log.info("applying CONFIRMED tag before resending (was missing)", { email });
-    await applyConfirmed(email);
+    log.info("marking confirmed before resending (was missing)", { email });
+    await setConfirmed(email);
   }
 
   const result = await sendQrEmail(email, person.name);

@@ -17,6 +17,23 @@ export const env = {
   // or a domain you authenticated). Format: "Display Name <email@domain.com>".
   FROM_EMAIL: () => required("FROM_EMAIL"),
   REPLY_TO: () => process.env.REPLY_TO_EMAIL,
+
+  // ── MongoDB (source of truth for invitees + their statuses) ──────────────────
+  MONGODB_URI: () => required("MONGODB_URI"),
+  MONGODB_DB: () => process.env.MONGODB_DB || "fya-eventos",
+
+  // ── Google Sheets (check-in log + datos extra que se cargan el día del evento) ─
+  // Service account con la Sheets API habilitada. El Sheet debe estar COMPARTIDO
+  // con el email del service account (rol Editor).
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: () => required("GOOGLE_SERVICE_ACCOUNT_EMAIL"),
+  // La private key suele venir con saltos de línea escapados como "\n" en el env.
+  GOOGLE_PRIVATE_KEY: () => required("GOOGLE_PRIVATE_KEY").replace(/\\n/g, "\n"),
+  GOOGLE_SHEETS_ID: () => required("GOOGLE_SHEETS_ID"),
+  GOOGLE_SHEETS_TAB: () => process.env.GOOGLE_SHEETS_TAB || "Check-ins",
+
+  // ── Cron / sync ──────────────────────────────────────────────────────────────
+  // Vercel inyecta "Authorization: Bearer ${CRON_SECRET}" en los requests del cron.
+  CRON_SECRET: () => required("CRON_SECRET"),
 };
 
 export const TAGS = {
